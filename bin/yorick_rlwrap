@@ -1,0 +1,23 @@
+#! /bin/sh
+
+PREFIX=$(readlink -f $(dirname "$0")/..)
+#echo "PREFIX='$PREFIX'"
+
+libdir="$PREFIX/lib"
+case "$LD_LIBRARY_PATH" in
+    "$libdir" | *:"$libdir" | "$libdir":* | *:"$libdir":* ) ;;
+    * ) LD_LIBRARY_PATH="$libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;;
+esac
+export LD_LIBRARY_PATH
+#echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
+
+case "$TERM" in
+    xterm*) xterm="yes";;
+    *)      xterm="no";;
+esac
+exe="$PREFIX/libexec/yorick/bin/yorick"
+if test "$xterm" = "yes"; then
+    exec rlwrap -c -pCYAN "$exe" "$@"
+else
+    exec "$exe" "$@"
+fi

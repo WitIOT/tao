@@ -1,0 +1,316 @@
+#!/bin/bash
+#
+# This file defines the options for a full installation of TAO software. It
+# must be given as the first argument of any script install-* from package
+# install-tao.
+#
+# ----------------------------------------------------------------------------
+#
+# This configuration file installs the first (V1) operational revision of TAO
+# software for NARIT bench for testing the evanescent wave coronagraph. There
+# is no wavefront sensor on this bench. The goal is to use the deformable
+# mirror to cancel the non-common-path aberrations. It includes:
+# 
+# - Boston Micromachine DM server. The DM server now includes an entry for
+#   posting perturbations.
+# 
+# - A Kepler camera from Finger Lakes Instrumentation for the science camera
+#   (output of the coronagraph).
+# 
+# The software is currently attached to branch v0.10, including a updated 
+# version of tao-ncpa.
+#
+# ----------------------------------------------------------------------------
+#
+# Principles
+# ----------
+#
+# - All the TAO software is gathered in INSTALL_DIRECTORY with the following
+#   organization. As a example, if INSTALL_DIRECTORY=$HOME/tao_2022-02-03, the
+#   contents of the TAO directory looks like (a subset only is shown):
+#
+#     $HOME/tao_2022-02-03
+#     |- bin/
+#     |  |- alpao_server                 Samples of servers for DM and cameras.
+#     |  |- andor_server
+#     |  |- bmc_server
+#     |  |- phoenix_server
+#     |  |- julia-ao                     julia client for driving AO.
+#     |  |- tao_*                        Commands to drive the cameras.
+#     |  |- yorick                       yorick client (visu, NCPA, ...).
+#     |  |- yorick_rlwrap                yorick with rlwrap REPL.
+#     |  |- install-tao                  Installation script that was used.
+#     |  |- tao_switch                   Command to switch between installs.
+#     |  `- ypkg                         Package manager for EasyYorick.
+#     |- etc/
+#     |  |- install-tao-julia-packages.jl
+#     |  |- profile_tao.sh               Defines PATHS and environment.
+#     |  |- config-themis-20220312       Copy of the config file that was used.
+#     |  |- themis-ao
+#     |  |  |- Manifest.toml             Files for julia.
+#     |  |  `- Project.toml
+#     |  `- ypkg/                        Files for EasyYorick.
+#     |     |- MANIFEST
+#     |     `- scripts.d/
+#     |- include/                        TAO include files.
+#     |- lib/                            TAO libraries.
+#     |- libexec/
+#     |  `- yorick/                      yorick software.
+#     |- tao-src/                        Sources of tao software (git).
+#     |  |- install-tao/
+#     |  |- tao-ncpa/
+#     |  |- tao-rt/
+#     |  |- tao-rt-yorick/
+#     |  `- tao-yorick/
+#     `- src/                            Sources of ypkg packages (git).
+#
+# - This configuration file allows the contents of INSTALL_DIRECTORY to be
+#   regenerated with the same revisions of each piece of software.
+#
+# - The actual TAO software is selected by using a symbolic link:
+#
+#       $HOME/local_tao -> INSTALL_DIRECTORY
+#
+#   Thus the revision of the software to be used can be changed by just
+#   changing this link. For instance, a previous validated directory can be
+#   selected after testing a new one. This change can be done with the command
+#   tao_switch.
+#
+# - For building a new TAO directory, duplicate this file, and change the
+#   variables, in particular change the value of INSTALL_DIRECTORY.
+#
+# ----------------------------------------------------------------------------
+
+
+# --+=^=+---------------------------------------------------------------------
+#                     INITIALIZATION OF GLOBAL VARIABLES
+# ----------------------------------------------------------------------------
+
+# -------- Path of the directory where to install
+# - The value given as an argument of the scripts may supersede this definition.
+# - Using a relative path is allowed.
+# - A symbolic link $HOME/local_tao -> INSTALL_DIRECTORY will activate the
+#   installation (to be done by hand).
+#
+INSTALL_DIRECTORY=$HOME/apps/tao_toolbox/tao_2022-04-25_v0.10
+
+# -------- Name of the AO system
+# - Used for the name of a directory in INSTALL_DIRECTORY/etc.
+#
+NAME_OF_AO_SYSTEM=evwaco-ao
+
+
+# --+=^=+---------------------------------------------------------------------
+#                                 TAO_RT
+# ----------------------------------------------------------------------------
+
+# -------- Where to get the source files
+# - Can be either a link for "git clone" or a directory to be copied.
+#
+TAO_RT_SOURCES="git@git-cral.univ-lyon1.fr:tao/tao-rt.git"
+
+# -------- Branch or commit to checkout
+# - To be set to a commit number, a tag, or a branch.
+# - If unset, HEAD of default branch (e.g. master, main) is checked out.
+#
+TAO_RT_REVISION="v0.10"
+
+# -------- Name of a file expected to exist in the sources
+#
+TAO_RT_CHECK_FILE="base/camera-servers.c"
+
+# -------- Libraries to be installed
+#
+# Most of these libraries are related to the hardware available on the current
+# host, and to the related installed SDK. The support of this hardware may have
+# been added (or removed!) throughout the history of TAO software. Thus it is
+# better to let the variables undefined (i.e. commented out) if they are
+# irrelevant with the current configuration.
+#
+# For each possible library, the value can be either:
+#
+# - "no":      skip this library, even if the related SDK is available.
+#
+# - commented: same as "ckeck", but no error is issued if the option does not
+#              exist anymore in TAO software.
+#
+# - "yes":     set this library as mandatory, automatically find libraries and
+#              headers for compilation, and fail if they cannot be found.
+#
+# - "check":   same as "yes", but skip the library if files are not found. The
+#              need of this library is considered as optionnal.
+#
+# - "force":   compile the library without checking the validity of the related
+#              settings.
+#
+# - a directory, say $DIR, to specify "$DIR/include" for headers and
+#   "$DIR/lib" for libraries. For instance "/usr" if the software is
+#   installed in "/usr/include" and "/usr/lib".
+#
+# ENABLE_ALPAO=no
+ENABLE_ANDOR=check
+ENABLE_BMC=yes
+ENABLE_CFITSIO=yes
+ENABLE_LIBFLI=/opt/fli/libfli-1.104
+ENABLE_LIBFLIPRO=check
+# ENABLE_PHOENIX=no
+
+
+# --+=^=+---------------------------------------------------------------------
+#                               TAO_JULIA
+# ----------------------------------------------------------------------------
+
+# -------- Install TAO julia or not ?
+# TAO julia software will be installed if set to "yes". It will not be
+# installed if it is set to "no".
+#
+INSTALL_TAO_JULIA="no"
+
+
+# -------- julia PATH
+# A launching script will be created in INSTALL_DIRECTORY for launching this
+# julia binary with the appropriate context.
+# - If unset, will use the one obtained by `which julia`.
+#
+JULIA_PATH=/apps/bin/julia-1.7
+
+
+# -------- Julia packages to install
+# - The variable JULIA_PACKAGES will be evaluated, saved in a file
+#   "$INSTALL_DIRECTORY/etc/install-tao-julia-packages.jl", and sourced by
+#   julia to install and configure the required julia pieces of software with
+#   the specified revisions.
+# - The first and two last lines must not be changed.
+# - Reminder for julia:
+#   - add Example@0.4           # specific revision number.
+#   - add Example#7876af07      # specific commit SHA
+#   - add Example#master        # branch master
+# - Links
+#   - "add Example@0.2.5" uses https
+#   - "Pkg.add(url="git@git-cral.univ-lyon1.fr:tao/tao.jl.git") uses ssh.
+#
+JULIA_PACKAGES=$(cat <<END_OF_JULIA_PACKAGES   # Do not change this line
+
+INSTALLDIR="\$INSTALL_DIRECTORY"               # Do not change this line
+
+# ---- Set environment location and activate it.
+using Pkg
+Pkg.activate(joinpath(INSTALLDIR, "etc", "themis-ao"))
+
+# ---- Set necessary environment variables.
+ENV["TAO_INCDIR"] = joinpath(INSTALLDIR, "include")
+ENV["TAO_LIBDIR"] = joinpath(INSTALLDIR, "lib")
+
+# ---- Add registries.
+pkg"registry add General"
+pkg"registry add https://github.com/emmt/EmmtRegistry"
+
+# ---- Add packages for TAO
+# ssh access (git@...) is mandatory for private packages.
+
+# InterpolationKernels.jl
+pkg"add InterpolationKernels@0.2.5"; pkg"precompile"
+
+# Tao.jl (not private package, but use ssh anyway).
+Pkg.add(url="git@git-cral.univ-lyon1.fr:tao/tao.jl.git",
+        rev="v0.8.2");               pkg"precompile"
+
+# ScientificDetectors (private package, so use ssh keys).
+# FIXME: to be tested: v0.3.0-c
+Pkg.add(url="git@git-cral.univ-lyon1.fr:emmt/scientificdetectors.git",
+        rev="v0.2.2");               pkg"precompile"
+
+# TaoBindings (not private)
+Pkg.add(url="git@git-cral.univ-lyon1.fr:tao/taobindings.jl.git",
+        rev="v0.8.2");               pkg"precompile"
+
+# SolarWavefrontSensing.jl (private package, so use ssh keys).
+Pkg.add(url="git@git-cral.univ-lyon1.fr:tao/solarwavefrontsensing.jl.git",
+        rev="v0.2.1");               pkg"precompile"
+
+# AdaptiveOptics.jl (private package, so use ssh keys).
+Pkg.add(url="git@git-cral.univ-lyon1.fr:tao/adaptiveoptics.jl.git",
+        rev="v0.8.2");               pkg"precompile"
+
+# ThemisAO.jl (private package, so use ssh keys).
+Pkg.add(url="git@git-cral.univ-lyon1.fr:tao/themisao.jl.git",
+        rev="v0.8.3");               pkg"precompile"
+
+pkg"add EasyFITS@0.2.2";             pkg"precompile"
+pkg"add MayOptimize@0.3.1";          pkg"precompile"
+pkg"add TwoDimensional";             pkg"precompile"
+pkg"add ArrayTools";                 pkg"precompile"
+pkg"add Revise";                     pkg"precompile"
+
+
+END_OF_JULIA_PACKAGES
+)                # Do not change these two last lines.
+
+
+# --+=^=+---------------------------------------------------------------------
+#                                 YORICK
+# ----------------------------------------------------------------------------
+
+# -------- list of yorick packages to be installed
+#
+EASYYORICK_PACKAGES="ypkg yorick yorick-z \
+                     yeti optimpack ylib yfitsio"
+
+# --+=^=+---------------------------------------------------------------------
+#                              TAO_RT_YORICK
+# ----------------------------------------------------------------------------
+
+# -------- Where to get the source files
+# - Can be either a link for "git clone" or a directory to be copied.
+#
+TAO_RT_YORICK_SOURCES="git@git-cral.univ-lyon1.fr:tao/tao-rt-yorick.git"
+
+# -------- Branch or commit to checkout
+# - To be set to a commit number, a tag, or a branch.
+# - If unset, HEAD of default branch (e.g. master, main) is checked out.
+#
+TAO_RT_YORICK_REVISION="v0.10"
+
+# -------- Name of a file expected to exist in the sources
+#
+TAO_RT_YORICK_CHECK_FILE="tao-rt-start.i"
+
+
+# --+=^=+---------------------------------------------------------------------
+#                               TAO_YORICK
+# ----------------------------------------------------------------------------
+
+# -------- Where to get the source files
+# - Can be either a link for "git clone" or a directory to be copied.
+#
+TAO_YORICK_SOURCES="git@git-cral.univ-lyon1.fr:tao/tao-yorick.git"
+
+# -------- Branch or commit to checkout
+# - To be set to a commit number, a tag, or a branch.
+# - If unset, HEAD of default branch (e.g. master, main) is checked out.
+#
+TAO_YORICK_REVISION=
+
+# -------- Name of a file expected to exist in the sources
+#
+TAO_YORICK_CHECK_FILE="tao-start.i"
+
+
+# --+=^=+---------------------------------------------------------------------
+#                                TAO_NCPA
+# ----------------------------------------------------------------------------
+
+# -------- Where to get the source files
+# - Can be either a link for "git clone" or a directory to be copied.
+#
+TAO_NCPA_SOURCES="git@git-cral.univ-lyon1.fr:tao/tao-ncpa.git"
+
+# -------- Branch or commit to checkout
+# - To be set to a commit number, a tag, or a branch.
+# - If unset, HEAD of default branch (e.g. master, main) is checked out.
+#
+TAO_NCPA_REVISION="v0.10"
+
+# -------- Name of a file expected to exist in the sources
+#
+TAO_NCPA_CHECK_FILE="tao-ncpa-start.i"

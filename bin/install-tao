@@ -1,0 +1,370 @@
+#!/bin/bash
+#
+# This script installs all TAO software by calling successively the following
+# scripts, in this order:
+#
+#   - install-tao-rt           libraries for alpao, phoenix, andor.
+#   - install-tao-julia        all julia scripts.
+#   - install-yorick           yorick and necessary yorick packages.
+#   - install-tao-rt-yorick    real time interface for yorick.
+#   - install-tao-yorick       tao yorick packages (visu).
+#   - install-tao-ncpa         software for ncpa.
+#   - install-tao-profile      definitions of environment variables for TAO.
+#
+# - The scripts need a configuration file as a mandatory argument and gather
+#   TAO software in the directory $INSTALL_DIRECTORY specified in the
+#   configuration file.
+#
+# - install-tao records the successive successful steps of the installation. A
+#   successful step cannot be redo, so that to prevent overwriting an existing
+#   installation. Redoing the installation suppose to start from an empty
+#   directory.
+#
+# - For debug purpose, any other install-* script can be launched separately.
+#
+# ----------------------------------------------------------------------------
+
+# --+=^=+---------------------------------------------------------------------
+#                     INITIALIZATION OF GLOBAL VARIABLES
+# ----------------------------------------------------------------------------
+
+MYNAME=$(basename "$0")
+MYDIR=$(dirname "$(readlink "$0" || echo "$0")")  # follow symbolic links.
+TAOMODULE="install-tao"
+
+export CURDIR=$PWD
+export CALLED_FROM_INSTALL_TAO="yes"
+export DEBUG="no"
+export TAO_SRC_ORIGIN
+
+# --+=^=+---------------------------------------------------------------------
+#                                FUNCTIONS
+# ----------------------------------------------------------------------------
+
+# --+=^=+----------- Source shared library of functions
+#
+# See the full list of functions in file "functions-for-install.sh".
+#
+set -a
+source "$MYDIR/functions-for-install.sh"
+set +a
+
+
+# --+=^=+----------- check_install_tao
+#
+# checks that all the scripts and files are available in current dir.
+#
+check_install_tao() {
+  local f
+
+  while read f; do
+    if [ ! -r "$MYDIR/$f" ]; then
+      error_and_stop "file \"$f\" is missing in \"$MYDIR\"$NL" \
+                     "install-tao package seems to be modified..."
+    fi
+  done<<EOF
+functions-for-install.sh
+install-tao-rt
+install-tao-julia
+install-yorick
+install-tao-rt-yorick
+install-tao-yorick
+install-tao-ncpa
+install-tao-profile
+startup.jl
+tao_switch
+yorick_rlwrap
+EOF
+}
+
+
+# --+=^=+----------- section_title <title string>
+#
+section_title() {
+  echo
+  echo
+  echo ===================================================== $*
+  sleep 1
+}
+
+
+# --+=^=+----------- show_help
+#
+show_help() {
+  cat <<END_OF_HELP
+
+  $MYNAME <config-file> [<install-dir>]
+
+  installs TAO software according to the specifications defined in
+  <config-file> (mandatory argument). The optional argument <install-dir>
+  supersedes the name of the installation directory specified in the
+  configuration file. It must be an empty directory to prevent any overwrite
+  of an existing installation. <install-dir> may be a relative path.
+
+  This script calls successively the more specific scripts (in this order):
+  install-tao-rt, install-tao-julia, install-yorick, install-tao-rt-yorick,
+  install-tao-yorick, install-tao-ncpa, and install-tao-profile.
+
+  Each of those scripts can be executed independently to do the corresponding
+  installation.
+
+  Options allow to skip some of those steps. install-tao-rt is the only step
+  that cannot be skipped.
+
+  Options:
+    --nojulia      Does not install julia, i.e. skips install-tao-julia.
+
+    --noyorick     Does not install yorick and its packages. Thus skips the
+                   scripts install-yorick, install-tao-rt-yorick,
+                   install-tao-yorick, install-tao-ncpa.
+
+    --noprofile    Does not install <install-dir>/etc/profile_tao.sh
+
+    --src=PATH     Specifies the directory that gathers TAO sources, i.e.
+                   that contains the directories tao-rt, tao-julia,
+                   tao-yorick, tao-rt-yorick, tao-ncpa, etc. If not given, the
+                   sources will be downloaded from the path given in the
+                   configuration file.
+
+    --debug        Debug mode which shows various details for debug.
+
+    --help         Shows this help and exits.
+END_OF_HELP
+}
+
+
+
+# --+=^=+---------------------------------------------------------------------
+#                             COLLECT ARGUMENTS
+# ----------------------------------------------------------------------------
+
+CONFIGFILE=
+INSTALLDIR=
+SKIPJULIA="no"
+SKIPPROFILE="no"
+SKIPYORICK="no"
+TAO_SRC_ORIGIN=
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    --debug )
+      DEBUG="yes"
+      ;;
+    --h*|-h* )
+      show_help
+      exit 0
+      ;;
+    --nojulia )
+      SKIPJULIA="yes"
+      ;;
+    --noprofile )
+      SKIPPROFILE="yes"
+      ;;
+    --noyorick )
+      SKIPYORICK="yes"
+      ;;
+    --src=* )
+      TAO_SRC_ORIGIN=${1/#--src=/}
+      ;;
+    --src )
+      shift; TAO_SRC_ORIGIN=$1
+      ;;
+    -*)
+      error_and_stop unknown option "$1"
+      ;;
+    *)
+      if [ -z "$CONFIGFILE" ]; then
+        # First argument
+        CONFIGFILE=$1
+      elif [ -z "$INSTALLDIR" ]; then
+        # Second argument
+        INSTALLDIR=$1
+      else
+        error_and_stop "No more than two arguments (see --help)"
+      fi
+      ;;
+  esac
+  shift
+done
+
+# --+=^=+----------- Check TAO_SRC_ORIGIN is a directory (if given).
+#
+if [ -n "$TAO_SRC_ORIGIN" -a ! -d "$TAO_SRC_ORIGIN" ]; then
+  error_and_stop "Directory \"$TAO_SRC_ORIGIN\" not found"
+fi
+
+
+# --+=^=+----------- Display debug info.  FIXME: review
+#
+echo_debug "CURDIR=$CURDIR${NL}" \
+           "CONFIGFILE=$CONFIGFILE${NL}" \
+           "INSTALLDIR=$INSTALLDIR${NL}"\
+           "SKIPJULIA=$SKIPJULIA${NL}" \
+           "SKIPPROFILE=$SKIPPROFILE${NL}"\
+           "SKIPYORICK=$SKIPYORICK${NL}"\
+           "TAO_SRC_ORIGIN=$TAO_SRC_ORIGIN"
+
+# --+=^=+---------------------------------------------------------------------
+#                       SOURCE CONFIG FILE AND CHECK
+# ----------------------------------------------------------------------------
+
+# ---- Check that all install-tao files are available
+#
+check_install_tao
+
+# ---- Check and source config file
+#      - This defines variable $CONFIGURATION_FILE or crashes.
+load_config_file "$CONFIGFILE"
+
+# ---- Check INSTALL_DIRECTORY exists
+#      - defines INSTALL_DIRECTORY or overwrites its value defined in config.
+#      - initializes TAO_SRC_DIR and TAO_SRC_TRACK.
+#      - saves config file in $INSTALL_DIRECTORY/etc
+check_install_dir "$INSTALLDIR"
+
+# ---- Check julia is available before installing tao-rt.
+#      - The installation of julia can be skipped if argument --nojulia was
+#        set (so SKIPJULIA="yes") or if $INSTALL_TAO_JULIA is not set to "yes"
+#        in the configuration file.
+#      - If julia mus be installed, check or initialize the variable
+#        $JULIA_PATH in the configuration file.
+if [ "$SKIPJULIA" != "yes" ] && julia_needed; then
+  check_julia
+fi
+
+# ---- Initialize context
+#      - variables LIBPATH_VAR, $LIBPATH_VAR, TAO_INCDIR, TAO_LIBDIR
+init_context
+
+
+# --+=^=+----------- Build and Install all the modules.
+#
+cd "$MYDIR"
+
+section_title install-tao-rt
+./install-tao-rt
+
+if [ "$SKIPJULIA" != "yes" ] && julia_needed; then
+  section_title install-tao-julia
+  ./install-tao-julia
+fi
+
+if [ "$SKIPYORICK" != "yes" ]; then
+  section_title install-yorick
+  ./install-yorick
+
+  section_title install-tao-rt-yorick
+  ./install-tao-rt-yorick
+
+  section_title install-tao-yorick
+  ./install-tao-yorick
+
+  section_title install-tao-ncpa
+  ./install-tao-ncpa
+fi
+
+if [ "$SKIPPROFILE" != "yes" ]; then
+  section_title install-tao-profile
+  ./install-tao-profile "$INSTALL_DIRECTORY"
+fi
+
+cd "$CURDIR"
+
+
+# --+=^=+----------- Get intall-tao sources and make install-tao available
+#
+this_step="$MYNAME/sources"
+
+section_title "install-tao (finalizing)"
+
+if track_not_found $this_step; then
+
+  # ---- Variables to be interpreted by sources_get.
+  INSTALL_TAO_SOURCES=$( cd "$MYDIR" ; pwd -P )
+  INSTALL_TAO_REVISION=
+  INSTALL_TAO_CHECK_FILE=
+
+  # ---- Store the current sources
+  sources_get $TAOMODULE INSTALL_TAO
+
+  # ---- Make a relative symbolic link
+  #      bin/install-tao -> ../tao-src/install-tao/install-tao
+  dest="$INSTALL_DIRECTORY/bin/$MYNAME"
+  mkdir -p "$INSTALL_DIRECTORY/bin"
+  if [ -h "$dest" ]; then
+    encaps rm "$dest"
+  fi
+  if [ -r "$dest" ]; then
+    encaps mv "$dest" "${dest}_old"
+  fi
+  # Use absolute name for chmod.
+  encaps chmod a+x "$TAO_SRC_DIR/$TAOMODULE/$MYNAME"
+  # Use relative name for symbolic link.
+  encaps ln -s "../$(basename $TAO_SRC_DIR)/$TAOMODULE/$MYNAME" "$dest"
+
+  # ---- Install tao_switch in bin
+  src="$TAO_SRC_DIR/$TAOMODULE/tao_switch"
+  dest="$INSTALL_DIRECTORY/bin/tao_switch"
+  encaps cp "$src" "$dest"
+  encaps chmod a+x "$dest"
+
+  # ---- Install yorick_rlwrap in bin
+  src="$TAO_SRC_DIR/$TAOMODULE/yorick_rlwrap"
+  dest="$INSTALL_DIRECTORY/bin/yorick_rlwrap"
+  encaps cp "$src" "$dest"
+  encaps chmod a+x "$dest"
+
+  # ---- Save the track.
+  track_save $this_step
+
+else
+  echo_info "$TAOMODULE sources already stored (skipping)"
+fi
+
+
+# --+=^=+----------- Show the result of the installation.
+#
+section_title Activation
+
+echo
+echo Installation done...
+echo
+
+if track_not_found "install-tao-profile/profile"; then
+
+  echo "But last step (install-tao-profile) is still to be done to get a"
+  echo "working installation (see $MYNAME --help)"
+  echo
+
+else
+
+  echo "This installation can be activated by using the command:"
+  echo
+  if cmd_exists tao_switch; then
+    echo "    \$ tao_switch \"$INSTALL_DIRECTORY\""
+    echo
+    echo "This command updates the symbolic link to:"
+  else
+    echo "    \$ \"$INSTALL_DIRECTORY/bin/tao_switch\" \"$INSTALL_DIRECTORY\""
+    echo
+    echo "This command creates the symbolic link:"
+  fi
+  echo "    $HOME/local_tao -> $INSTALL_DIRECTORY"
+  echo
+  echo "You can switch between different installations (different revisions"
+  echo "of TAO for instance) by using \"tao_switch\" (see tao_switch --help)"
+  echo
+  echo "Please also ensure that this line is written in your \$HOME/.profile:"
+  echo
+  echo "test -r \$HOME/local_tao/etc/profile_tao.sh "\
+       "&& . \$HOME/local_tao/etc/profile_tao.sh"
+  echo
+  echo "This line will source the script \"profile_tao.sh\" each time a"
+  echo "terminal is opened or at each login.  It defines the environment"
+  echo "variables to make the activated TAO software available with the"
+  echo "suitable libraries. If the line is copied for the first time, either"
+  echo "logout and login, or just source directly the script:"
+  echo
+  echo "    \$ source \"$HOME/local_tao/etc/profile_tao.sh\""
+  echo
+fi

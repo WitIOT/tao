@@ -1,0 +1,150 @@
+#!/bin/bash
+#
+# ----------------------------------------------------------------------------
+
+# --+=^=+---------------------------------------------------------------------
+#                     INITIALIZATION OF GLOBAL VARIABLES
+# ----------------------------------------------------------------------------
+
+MYNAME=$(basename "$0")
+DEBUG="no"
+ROOT="$HOME/local_tao"
+TAO_SRC_TRACK="$ROOT/tao-src/install-tao-tracker"
+
+# --+=^=+---------------------------------------------------------------------
+#                                FUNCTIONS
+# ----------------------------------------------------------------------------
+
+
+# --+=^=+---------------- error_and_stop <message>
+#
+# displays an error message <message> and exit with error level 1.
+#
+error_and_stop() {
+  echo "$*" >&2
+  exit 1
+}
+trap error_and_stop ERR
+
+# --+=^=+---------------- show_help
+#
+show_help() {
+  cat <<END_OF_HELP
+
+  $MYNAME [<install-dir>]
+
+  selects the given installation directory <install-dir> to be used for TAO
+  software. <install-dir> is supposed to be build with `install-tao` script.
+  $MYNAME allows to switch between different revisions of TAO software.
+
+  $MYNAME creates (or possibly overwrites) the symbolic link:
+  $HOME/local_tao -> <install-dir>
+
+  Without any argument, $MYNAME shows the current configuration.
+
+  Options:
+    --debug     Shows various details.
+    -h, --help  Shows this help and exits.
+
+END_OF_HELP
+}
+
+# --+=^=+---------------- show_tao_config
+#
+show_tao_config() {
+  local packages="tao-rt tao-rt-yorick tao-yorick tao-ncpa install-tao"
+  local pkg
+  local title="Configuration of TAO sources:"
+  local config
+
+  if [ -f "$TAO_SRC_TRACK" ]; then
+    config=$(grep ":config:" "$TAO_SRC_TRACK" | tail -n 1 | cut -sd: -f 3)
+    if [ -n "$config" ]; then
+      echo "Configuration file: \"$config\""
+    fi
+  fi
+
+  for pkg in $packages; do
+    dir="$ROOT/tao-src/$pkg"
+    if [ -d "$dir" ]; then
+      if [ -n "$title" ]; then
+        echo "$title"
+        title=""
+      fi
+      printf "%16s - %-s\n" "$pkg" "$(cd $dir; git status | head -n 1)"
+    fi
+  done
+}
+
+# --+=^=+---------------------------------------------------------------------
+#                                     MAIN
+# ----------------------------------------------------------------------------
+
+# --+=^=+----------- Collect arguments
+#
+INSTALLDIR=
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    --debug|-debug )
+      DEBUG="yes"
+      ;;
+    --h*|-h* )
+      show_help
+      exit 0
+      ;;
+    -*)
+      error_and_stop unknown option "$1"
+      exit 1
+      ;;
+    *)
+      if [ -z "$INSTALLDIR" ]; then
+        INSTALLDIR=$1
+      else
+        error_and_stop "No more than one argument (see --help)"
+        exit 1
+      fi
+      ;;
+  esac
+  shift
+done
+
+# --+=^=+----------- Show current configuration if no argument.
+#
+if [ -z "$INSTALLDIR" ]; then
+  link=$(ls -l "$ROOT" 2>&- | sed "s:^.*$ROOT:$ROOT:")
+  if [ -z "$link" ]; then
+    echo "no link defined yet: $ROOT -> ?"
+  else
+    echo "Current link: $link"
+    show_tao_config
+  fi
+  exit 0
+fi
+
+
+# --+=^=+----------- Check INSTALLDIR
+#
+if [ ! -d "$INSTALLDIR" ]; then
+  error_and_stop "$INSTALLDIR not found"
+fi
+if [ ! -x "$INSTALLDIR/bin/$MYNAME" ]; then
+  error_and_stop "cannot validate $INSTALLDIR$NL"\
+                 "($INSTALLDIR/bin/$MYNAME not found)"
+fi
+
+
+# --+=^=+----------- Make link
+#
+if [ -h "$HOME/local_tao" ]; then
+  rm "$HOME/local_tao"
+fi
+if [ -e "$HOME/local_tao" ]; then
+  echo "WARNING: cannot create symbolic link \"$HOME/local_tao\"$NL" \
+       "because a file with this name already exists"
+else
+  ln -s "$INSTALLDIR" $HOME/local_tao
+  link=$(ls -l "$ROOT" 2>&- | sed "s:^.*$ROOT:$ROOT:")
+  echo "link set to: $link"
+  show_tao_config
+fi

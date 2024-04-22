@@ -1,0 +1,1011 @@
+#! /bin/sh
+#
+# ypkg.sh --
+#
+# Script to automatically download sources, compile and install Yorick and some
+# extensions (among others MiRA https://github.com/emmt/MiRA).
+#
+# *IMPORTANT* Edit this script to match your needs.  In particular you want
+#             to choose SRCDIR and PREFIX.
+#
+# *IMPORTANT* Install required libraries and headers.  On Ubuntu:
+#
+#                 sudo apt-get install libfftw3-dev libnfft3-dev
+#
+
+# Avoid localized messages.
+export LANG="C"
+export LC_NUMERIC="C"
+
+# Exit immediately in case of untested errors.
+set -o errexit
+
+# Where to install everything (can be moved later, the sources --see below --
+# can be elsewhere).
+PREFIX="/home/evwaco/apps/tao_toolbox/tao_2022-04-25_v0.10"
+
+# Where to install the sources.
+SRCDIR=$PREFIX/src
+
+# Do you have texi2html?
+HAVE_TEXI2HTML=no
+
+# Do you want to preserve pre-existing Yorick installation?
+# If set to "yes", the installation will overwrite existing
+# files but preserve other installed files (in particular
+# the files installed by Yorick extensions).  Otherwise, a
+# fresh re-installation will be performed and the contents of
+# "$PREFIX/libexec/yorick" erased prior to installation.
+PRESERVE_OTHER_INSTALLED_FILES=yes
+
+# This global variable stores the list of available packages.
+PACKAGES=""
+
+# In principle, the following does not need changes.  But you can
+# have a look to see what will happen if you run this script.
+CONFIGDIR="$PREFIX/etc/ypkg"
+SCRIPTDIR="$CONFIGDIR/scripts.d"
+LIBDIR="$PREFIX/lib"
+LIBEXECDIR="$PREFIX/libexec"
+BINDIR="$PREFIX/bin"
+SHAREDIR="$PREFIX/share"
+MANDIR="$SHAREDIR/man"
+YORICK_EXE="$LIBEXECDIR/yorick/bin/yorick"
+MANIFEST="$CONFIGDIR/MANIFEST"
+
+export CC="gcc"
+export CFLAGS="-pipe -Wall -O2 -fomit-frame-pointer"
+export LDFLAGS=""
+
+YORICK_BRANCH="emmt"
+
+YPKG_USE_COLORS="yes"
+
+if test "$YPKG_USE_COLORS" = "yes"
+then
+    # '\e' is escape char for recent versions of `printf`, `\033` for older
+    # versions of `printf`, and '\x1b' for `/bin/echo -e`.
+    YPKG_BLACK='\033[30m'
+    YPKG_RED='\033[31m'
+    YPKG_GREEN='\033[32m'
+    YPKG_YELLOW='\033[33m'
+    YPKG_BLUE='\033[34m'
+    YPKG_MAGENTA='\033[35m'
+    YPKG_CYAN='\033[36m'
+    YPKG_WHITE='\033[37m'
+    YPKG_RESET='\033[0m'
+else
+    YPKG_BLACK=
+    YPKG_RED=
+    YPKG_GREEN=
+    YPKG_YELLOW=
+    YPKG_BLUE=
+    YPKG_MAGENTA=
+    YPKG_CYAN=
+    YPKG_WHITE=
+    YPKG_RESET=
+fi
+
+die() {
+    printf >&2 "${YPKG_RED}%s${YPKG_RESET}\n" "$*"
+    exit 1
+}
+
+ypkg_warn() {
+    printf >&2 "${YPKG_YELLOW}WARNING: %s${YPKG_RESET}\n" "$*"
+}
+
+# `ypkg_find_executable EXE` find executable EXE in $PATH.  Return ""
+# if not found.
+ypkg_find_executable() {
+    local dir exe="$1" result="" old_IFS="$IFS"
+    IFS=":"
+    for dir in $PATH; do
+        if test -x "$dir/$exe"; then
+            result="$dir/$exe"
+            break
+        fi
+    done
+    IFS="$old_IFS"
+    echo "$result"
+}
+
+test -e "$PREFIX" || mkdir -p "$PREFIX"
+test -d "$PREFIX" -a -r "$PREFIX" -a -w "$PREFIX" || \
+    die "Not a regular readable and writable directory \"$PREFIX\""
+
+test -e "$SRCDIR" || mkdir -p "$SRCDIR"
+test -d "$SRCDIR" -a -r "$SRCDIR" -a -w "$SRCDIR" || \
+    die "Not a regular readable and writable directory \"$SRCDIR\""
+
+test -e "$CONFIGDIR" || mkdir -p "$CONFIGDIR"
+test -d "$CONFIGDIR" -a -r "$CONFIGDIR" -a -w "$CONFIGDIR" || \
+    die "Not a regular readable and writable directory \"$CONFIGDIR\""
+
+test -e "$SCRIPTDIR" || mkdir -p "$SCRIPTDIR"
+test -d "$SCRIPTDIR" -a -r "$SCRIPTDIR" -a -w "$SCRIPTDIR" || \
+    die "Not a regular readable and writable directory \"$SCRIPTDIR\""
+
+test -e "$MANIFEST" || touch "$MANIFEST"
+test -f "$MANIFEST" -a -r "$MANIFEST" -a -w "$MANIFEST" || \
+    die "Not a regular readable and writable file \"$MANIFEST\""
+
+# Yields argument(s) converted to lowercase letters and dashes replaced by
+# underscores.
+ypkg_lowercase() {
+    echo "$*" | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ-' 'abcdefghijklmnopqrstuvwxyz_'
+}
+
+# Yields argument(s) converted to uppercase letters and dashes replaced by
+# underscores.
+ypkg_uppercase() {
+    echo "$*" | tr 'abcdefghijklmnopqrstuvwxyz-' 'ABCDEFGHIJKLMNOPQRSTUVWXYZ_'
+}
+
+# Define a new available package.
+ypkg_define() {
+    local pkg url
+    test $# -eq 2 || die "usage: ypkg_define PKG URL"
+    pkg="$1"
+    url="$2"
+    eval `ypkg_uppercase "$pkg"`_ORIGIN=\$url
+    PACKAGES="$PACKAGES $pkg"
+}
+
+# Assert that a package is available.
+ypkg_assert_available() {
+    local pkg url
+    while test $# -gt 0
+    do
+        ypkg_origin "$1"
+        shift
+    done
+}
+
+# Assert that a package is known and has been cloned.
+ypkg_assert_cloned() {
+    local pkg hash dir
+    while test $# -gt 0
+    do
+        pkg="$1"
+        ypkg_assert_available $pkg
+        hash=`ypkg_hash $pkg`
+        if test -z "$hash"
+        then
+            dir="$SRCDIR/$pkg"
+            test -e "$dir" && die "Invalid GIT repository at \"$dir\""
+            die "Package \"$pkg\" has not yet been cloned"
+        fi
+        shift
+    done
+}
+
+# Assert that a package has been configured.
+ypkg_assert_configured() {
+    local status
+    test $# -eq 1 || die "Expecting exactly 1 argument"
+    status=$(ypkg_status "$1")
+    case "$status" in
+        installed|upgradable|built|configured) ;;
+        *) die "Package \"$1\" has not yet been configured";;
+    esac
+}
+
+# Assert that a package has been built.
+ypkg_assert_built() {
+    local status
+    test $# -eq 1 || die "Expecting exactly 1 argument"
+    status=$(ypkg_status "$1")
+    case "$status" in
+        installed|upgradable|built) ;;
+        *) die "Package \"$1\" has not yet been built";;
+    esac
+}
+
+# Assert that a package has been installed.
+ypkg_assert_installed() {
+    local status
+    test $# -eq 1 || die "Expecting exactly 1 argument"
+    status=$(ypkg_status "$1")
+    case "$status" in
+        installed|upgradable) ;;
+        *) die "Package \"$1\" has not yet been installed";;
+    esac
+}
+
+# Yields the status of a package.
+ypkg_status() {
+    local pkg url hash count oldhash line status
+    test $# -eq 1 || die "Usage: ypkg_status PKG"
+    pkg="$1"
+    eval url=$(ypkg_origin -n $pkg)
+    if test -z "$url"
+    then
+        echo "unknown"
+        return
+    fi
+    if ! test -e "$SRCDIR/$pkg"
+    then
+        echo "available"
+        return
+    fi
+    hash=$(ypkg_hash $pkg)
+    if test -z "$hash"
+    then
+        echo "dirty"
+        return
+    fi
+    if test -f "$MANIFEST"
+    then
+        count=$(grep -s "^$pkg:" "$MANIFEST" | wc -l)
+        if test $count -eq 1
+        then
+            # Parse manifest.
+            line=$(grep -s "^$pkg:" "$MANIFEST")
+            oldhash=$(echo "$line" | \
+                          sed 's/^[^:]*:[^:]*: *\([a-fA-F0-9]*\) *$/\1/' | \
+                          tr 'A-F' 'a-f')
+            if test "$oldhash" != "$hash"
+            then
+                echo "upgradable"
+            else
+                echo "$line" | sed 's/^[^:]*: *\([^: ]*\).*/\1/'
+            fi
+            return
+        elif test $count -gt 1
+        then
+            # Too many matching entries, purge the manifest.
+            grep -v "^$pkg:" "$MANIFEST" > "$MANIFEST.tmp"
+            mv -f "$MANIFEST.tmp" "$MANIFEST"
+            count=0
+        fi
+    fi
+    echo "cloned"
+}
+
+# Usage: ypkg_origin [-n] PKG
+#
+# Yields the GIT URL of package PKG.
+# Do not check validity if `-n` flag is specified.
+#
+ypkg_origin() {
+    local url chk
+    chk="yes"
+    if test $# -eq 2 -a "$1" = "-n"; then
+        chk="no"
+        shift
+    fi
+    test $# -eq 1 || die "usage: ypkg_origin [-n] PKG"
+    eval url=\$`ypkg_uppercase "$1"`_ORIGIN
+    test "$chk" = "yes" -a -z "$url" && die "Unknown package \"$1\""
+    echo "$url"
+}
+
+# Usage: ypkg_hash PKG
+#
+# Yields the hash value of the local GIT repository of package PKG.  An empty
+# result is returned if there is no valid local GIT repository for package PKG.
+#
+ypkg_hash() {
+    local hash dir pkg
+    test $# -eq 1 || die "usage: ypkg_hash PKG"
+    pkg="$1"
+    set +o errexit # Temporarily ignore unchecked errors.
+    dir=$(pwd)
+    if test $? -eq 0; then
+        cd "$SRCDIR/$pkg" 2>/dev/null
+        if test $? -eq 0; then
+            hash=$(git rev-parse HEAD 2>/dev/null | tr 'A-F' 'a-f')
+            test $? -eq 0 && echo "$hash"
+            cd "$dir"
+        fi
+    fi
+    set -o errexit # Restore safe behavior for unchecked errors.
+}
+
+# Usage: ypkg_clone [PKG ...]
+#
+# Clone GIT repositories of package(s) PKG ...
+#
+ypkg_clone() {
+    local pkg func dir hash url
+    while test $# -gt 0
+    do
+        pkg="$1"
+        ypkg_assert_available $pkg
+        dir="$SRCDIR/$pkg"
+        if ! test -e "$dir"
+        then
+            func=clone_$(ypkg_lowercase $pkg)
+            if type $func >/dev/null 2>/dev/null
+            then
+                # Call package specific function.
+                $func
+            else
+                # Apply fallback.
+                cd "$SRCDIR"
+                url=`ypkg_origin "$pkg"`
+                git clone "$url" "$pkg"
+            fi
+            ypkg_register $pkg cloned
+        fi
+        shift
+    done
+}
+
+#
+# Usage: ypkg_update [PKG ...]
+#
+# Update the local GIT repositories of package(s) PKG ...
+#
+ypkg_update() {
+    local opt pkg func
+    while test $# -gt 0
+    do
+        pkg="$1"
+        test -d "$SRCDIR/$pkg" || die "Package $pkg has no local repository"
+        printf "${YPKG_YELLOW}%s:${YPKG_RESET} " $pkg
+        func=update_$(ypkg_lowercase $pkg)
+        if type $func >/dev/null 2>/dev/null
+        then
+            # Call package specific function.
+            $func
+        else
+            # Apply fallback.
+            cd "$SRCDIR/$pkg"
+            git pull -r
+        fi
+        shift
+    done
+}
+
+#
+# Usage: ypkg_config [PKG ...]
+#
+# Configure package(s) PKG ...
+#
+ypkg_config() {
+    local pkg sfx dir
+    while test $# -gt 0
+    do
+        pkg="$1"
+        ypkg_assert_cloned $pkg
+        func=config_$(ypkg_lowercase $pkg)
+        if type $func >/dev/null 2>/dev/null
+        then
+            # Call package specific function.
+            $func
+        else
+            # Apply fallback.
+            dir="$SRCDIR/$pkg/build"
+            mkdir -p "$dir"
+            cd "$dir"
+            ../configure --yorick="$YORICK_EXE"
+        fi
+        ypkg_register $pkg configured
+        shift
+    done
+}
+
+#
+# Usage: ypkg_build [PKG ...]
+#
+# Build package(s) PKG ...
+#
+ypkg_build() {
+    local pkg func dir
+    while test $# -gt 0
+    do
+        pkg="$1"
+        ypkg_assert_configured $pkg
+        func=build_$(ypkg_lowercase $pkg)
+        if type $func >/dev/null 2>/dev/null
+        then
+            # Call package specific function.
+            echo "call $func..."
+            $func
+        else
+            # Apply fallback.
+            dir="$SRCDIR/$pkg/build"
+            test -f "$dir/Makefile" || die "Call \"ypkg configure $pkg\" first"
+            cd "$dir"
+            make clean
+            make all
+        fi
+        ypkg_register $pkg built
+        shift
+    done
+}
+
+#
+# Usage: ypkg_install [PKG ...]
+#
+# Install package(s) PKG ...
+#
+ypkg_install() {
+    local pkg sfx status
+    while test $# -gt 0
+    do
+        pkg=$1
+        status=$(ypkg_status $pkg)
+        if test "$status" = "available"
+        then
+            ypkg_clone $pkg
+            status=$(ypkg_status $pkg)
+        fi
+        if test "$status" = "cloned" -o "$status" = "upgradable"
+        then
+            ypkg_config $pkg
+            status=$(ypkg_status $pkg)
+        fi
+        if test "$status" = "configured"
+        then
+            ypkg_build $pkg
+            status=$(ypkg_status $pkg)
+        fi
+        if test "$status" = "built"
+        then
+            func=install_$(ypkg_lowercase $pkg)
+            if type $func >/dev/null 2>/dev/null
+            then
+                # Call package specific function.
+                $func
+            else
+                # Apply fallback.
+                dir="$SRCDIR/$pkg/build"
+                test -f "$dir/Makefile" || \
+                    die "Package $pkg not properly configured"
+                cd "$dir"
+                make install
+            fi
+            status="installed"
+            ypkg_register $pkg $status
+        fi
+        test "$status" = "installed" || die "Failed to install $pkg"
+        shift
+    done
+}
+
+ypkg_reinstall() {
+    local pkg sfx status
+    while test $# -gt 0
+    do
+        pkg=$1
+        ypkg_assert_available $pkg
+        ypkg_clone $pkg
+        ypkg_config $pkg
+        ypkg_build $pkg
+        ypkg_install $pkg
+        shift
+    done
+}
+
+ypkg_register() {
+    local pkg status hash
+    test $# -eq 2 -o $# -eq 3 || die "usage: ypkg_register PKG STATUS [HASH]"
+    pkg="$1"
+    ypkg_assert_available $pkg
+    status="$2"
+    case "$status" in
+        cloned|configured|built|installed) ;;
+        *) die "Invalid status \"$status\"";;
+    esac
+    if test $# -eq 2
+    then
+        hash=`ypkg_hash $pkg`
+        test -z "$hash" && die "Invalid GIT repository at \"$SRCDIR/$pkg\""
+    else
+        hash="$3"
+    fi
+    if test -f "$MANIFEST" && grep -qs "^$pkg:" "$MANIFEST"
+    then
+        sed -e "s/^$pkg:.*/$pkg:$status:$hash/" < "$MANIFEST" > "$MANIFEST.tmp"
+        mv -f "$MANIFEST.tmp" "$MANIFEST"
+    else
+        echo "$pkg:$status:$hash" >> "$MANIFEST"
+    fi
+}
+
+ypkg_forget() {
+    local pkg
+    while test $# -gt 0
+    do
+        pkg="$1"
+        ypkg_assert_available $pkg
+        if test -f "$MANIFEST"
+        then
+            grep -v "^$pkg:" < "$MANIFEST" > "$MANIFEST.tmp"
+            mv -f "$MANIFEST.tmp" "$MANIFEST"
+        fi
+        shift
+    done
+}
+
+#______________________________________________________________________________
+#
+# Settings for EasyYorick/ypkg.
+#
+
+ypkg_define "ypkg" "https://github.com/emmt/EasyYorick.git"
+
+clone_ypkg() {
+    if ! test -d "$SRCDIR/ypkg"
+    then
+        cd "$SRCDIR"
+        git clone "$YPKG_ORIGIN" ypkg
+    fi
+}
+
+update_ypkg() {
+    test -e "$SRCDIR/ypkg" || clone_ypkg
+    cd "$SRCDIR/ypkg"
+    git pull -r
+}
+
+config_ypkg() {
+    test -e "$SRCDIR/ypkg" || clone_ypkg
+    cd "$SRCDIR/ypkg"
+    ./configure --prefix="$PREFIX" --cc="$CC" --cflags="$CFLAGS" \
+                --ldflags="$LDFLAGS"
+}
+
+build_ypkg() {
+    test -f "$SRCDIR/ypkg/Makefile" || config_ypkg
+}
+
+install_ypkg() {
+    test -f "$SRCDIR/ypkg/Makefile" || config_ypkg
+    cd "$SRCDIR/ypkg"
+    make install
+}
+
+#______________________________________________________________________________
+#
+# LOAD SCRIPTS
+#
+
+if test -d "$SCRIPTDIR"
+then
+    for file in "$SCRIPTDIR"/*.sh
+    do
+        . "$file"
+    done
+fi
+
+#______________________________________________________________________________
+#
+# COMMANDS
+#
+
+# Implements: ypkg register [--] PKG ...
+#
+# Register package(s) PKG ... in the database after they have been installed.
+#
+ypkg_command_register() {
+    local opt
+    opt="yes"
+    while test $# -gt 0 -a "$opt" = yes
+    do
+        case "$1" in
+            -- ) opt="no";;
+            -* ) die "Invalid option \"$1\"";;
+            *  ) break;;
+        esac
+        shift
+    done
+    while test $# -gt 0
+    do
+        ypkg_register "$1" "installed"
+        shift
+    done
+}
+
+# Implements: ypkg forget [--] PKG ...
+#
+# Remove package(s) PKG ... from the database.
+#
+ypkg_command_forget() {
+    local opt
+    opt="yes"
+    while test $# -gt 0 -a "$opt" = yes
+    do
+        case "$1" in
+            -- ) opt="no";;
+            -* ) die "Invalid option \"$1\"";;
+            *  ) break;;
+        esac
+        shift
+    done
+    ypkg_forget "$@"
+}
+
+# Implements: ypkg list [--]
+#
+# List available packages and their status.
+#
+ypkg_command_list() {
+    local opt pkg status
+    opt="yes"
+    while test $# -gt 0 -a "$opt" = yes
+    do
+        case "$1" in
+            -- ) opt="no";;
+            -* ) die "Invalid option \"$1\"";;
+            *  ) break;;
+        esac
+        shift
+    done
+    test $# -eq 0 || die "Usage: ypkg list [--]"
+    ypkg_command_check $PACKAGES
+}
+
+# Implements: ypkg check [--] [PKG ...]
+#
+# Check packages and their status.
+#
+ypkg_command_check() {
+    local opt pkg packages status text color
+    opt="yes"
+    while test $# -gt 0 -a "$opt" = yes
+    do
+        case "$1" in
+            -- ) opt="no";;
+            -* ) die "Invalid option \"$1\"";;
+            *  ) break;;
+        esac
+        shift
+    done
+    if test $# -gt 0
+    then
+        packages="$@"
+    else
+        packages=$PACKAGES
+    fi
+    for pkg in $packages
+    do
+        status=$(ypkg_status $pkg)
+        case "$status" in
+            available )
+                color="$YPKG_BLUE"
+                ;;
+            cloned )
+                color="$YPKG_CYAN"
+                ;;
+            configured | built )
+                color="$YPKG_YELLOW"
+                ;;
+            installed )
+                color="$YPKG_GREEN"
+                ;;
+            upgradable )
+                color="$YPKG_MAGENTA"
+                ;;
+            * )
+                color="$YPKG_RED"
+                ;;
+        esac
+        printf "${color}%-20s %s${YPKG_RESET}\n" $pkg $status \
+            | sed 's/ /./g;s/\(\.\.*\)/ \1 /'
+    done
+}
+
+# Implements: ypkg clone [--] PKG [...]
+#
+# Clone packages.
+#
+ypkg_command_clone() {
+    local opt
+    opt="yes"
+    while test $# -gt 0 -a "$opt" = yes
+    do
+        case "$1" in
+            -- ) opt="no";;
+            -* ) die "Invalid option \"$1\"";;
+            *  ) break;;
+        esac
+        shift
+    done
+    test $# -gt 0 || die "Usage: ypkg clone [--] PKG [...]"
+    ypkg_clone "$@"
+}
+
+#
+# Implements: ypkg update [--] [PKG ...]
+#
+# Update the local GIT repositories of package(s) PKG ...
+#
+ypkg_command_update() {
+    local opt pkg sfx status
+    opt="yes"
+    while test $# -gt 0 -a "$opt" = yes
+    do
+        case "$1" in
+            -- ) opt="no";;
+            -* ) die "Invalid option \"$1\"";;
+            *  ) break;;
+        esac
+        shift
+    done
+    if test $# -eq 0
+    then
+        for pkg in $PACKAGES
+        do
+            status=$(ypkg_status $pkg)
+            case "$status" in
+                installed|upgradable|built|configured|cloned)
+                    ypkg_update $pkg;;
+            esac
+        done
+    else
+        ypkg_update "$@"
+    fi
+}
+
+#
+# Implements: ypkg upgrade [--] [PKG ...]
+#
+# Upgrade all installed packages of update and upgrade the specified package(s)
+# PKG ...
+#
+ypkg_command_upgrade() {
+    local opt pkg sfx status
+    opt="yes"
+    while test $# -gt 0 -a "$opt" = yes
+    do
+        case "$1" in
+            -- ) opt="no";;
+            -* ) die "Invalid option \"$1\"";;
+            *  ) break;;
+        esac
+        shift
+    done
+    if test $# -eq 0
+    then
+        # Re-install upgradable pakages.
+        for pkg in $PACKAGES
+        do
+            status=$(ypkg_status $pkg)
+            test "$status" = "upgradable" && ypkg_install $pkg
+        done
+    else
+        # Idem but update package repository first.
+        for pkg in "$@"
+        do
+            ypkg_update $pkg
+            status=$(ypkg_status $pkg)
+            test "$status" = "upgradable" && ypkg_install $pkg
+        done
+    fi
+}
+
+#
+# Implements: ypkg config [--] PKG [...]
+#
+# Configure packages.
+#
+ypkg_command_config() {
+    local opt
+    opt="yes"
+    while test $# -gt 0 -a "$opt" = yes
+    do
+        case "$1" in
+            -- ) opt="no";;
+            -* ) die "Invalid option \"$1\"";;
+            *  ) break;;
+        esac
+        shift
+    done
+    test $# -gt 0 || die "Usage: ypkg config [--] PKG [...]"
+    ypkg_config "$@"
+}
+
+# Implements: ypkg build [--] PKG [...]
+#
+# Build packages.
+#
+ypkg_command_build() {
+    local opt
+    opt="yes"
+    while test $# -gt 0 -a "$opt" = yes
+    do
+        case "$1" in
+            -- ) opt="no";;
+            -* ) die "Invalid option \"$1\"";;
+            *  ) break;;
+        esac
+        shift
+    done
+    test $# -gt 0 || die "Usage: ypkg build [--] PKG [...]"
+    ypkg_build "$@"
+}
+
+# Implements: ypkg install [--] PKG [...]
+#
+# Install packages.
+#
+ypkg_command_install() {
+    local opt
+    opt="yes"
+    while test $# -gt 0 -a "$opt" = yes
+    do
+        case "$1" in
+            -- ) opt="no";;
+            -* ) die "Invalid option \"$1\"";;
+            *  ) break;;
+        esac
+        shift
+    done
+    test $# -gt 0 || die "Usage: ypkg install [--] PKG [...]"
+    ypkg_install "$@"
+}
+
+# Implements: ypkg reinstall [--] PKG [...]
+#
+# Install packages.
+#
+ypkg_command_reinstall() {
+    local opt
+    opt="yes"
+    while test $# -gt 0 -a "$opt" = yes
+    do
+        case "$1" in
+            -- ) opt="no";;
+            -* ) die "Invalid option \"$1\"";;
+            *  ) break;;
+        esac
+        shift
+    done
+    test $# -gt 0 || die "Usage: ypkg reinstall [--] PKG [...]"
+    ypkg_reinstall "$@"
+}
+
+ypkg_command_variables() {
+    local opt
+    opt="yes"
+    while test $# -gt 0 -a "$opt" = yes
+    do
+        case "$1" in
+            -- ) opt="no";;
+            -* ) die "Invalid option \"$1\"";;
+            *  ) break;;
+        esac
+        shift
+    done
+    test $# -eq 0 || die "Usage: ypkg variables [--]"
+    cat <<EOF
+# Common installation directory.
+PREFIX="/home/evwaco/apps/tao_toolbox/tao_2022-04-25_v0.10"
+
+# Where to install the sources.
+SRCDIR=$SRCDIR
+
+# Directory for customization scripts.
+SCRIPTDIR=$SCRIPTDIR
+
+# Directory for compiled libraries.
+LIBDIR=$LIBDIR
+
+# Directory for compiled packages.
+LIBEXECDIR=$LIBEXECDIR
+
+# Directory for executables.
+BINDIR=$BINDIR
+
+# Directory for architure-independent files.
+SHAREDIR=$SHAREDIR
+
+# Directory for manual pages.
+MANDIR=$MANDIR
+
+# Path to Yorick executable.
+YORICK_EXE=$YORICK_EXE
+
+# C compiler, compilation and link flags.
+CC="gcc"
+CFLAGS="-pipe -Wall -O2 -fomit-frame-pointer"
+LDFLAGS=""
+
+# Use color for messages.
+YPKG_USE_COLORS=$YPKG_USE_COLORS
+EOF
+}
+
+ypkg_command_help() {
+    cat <<EOF
+Usage: ypkg COMMAND [OPTIONS ...] [--] [PKG ...]
+
+Manage Yorick packages.  The following high level commands are available:
+
+    help
+        Print this help.
+
+    list [--]
+        List available packages and their status.  Possible status:
+         - "unknown"    if package is not in the database of known packages;
+         - "available"  if package is available but not installed;
+         - "cloned"     if repository of package has been cloned;
+         - "configured" if package has been configured;
+         - "built"      if package has been built;
+         - "installed"  if package has been installed;
+         - "upgradable" if package has been installed but a new version is
+                        in the local repository;
+         - "dirty"      if local package repository exists but is not a valid
+                        GIT repository;
+
+    check [--] [PKG ...]
+        Check status of package(s).  If no package names are specified,
+        all available packages are considered (like the "list" command).
+
+    install [--] PKG [...]
+        Install package(s).  Installing a package automatically performs
+        low level operations "clone" (if there is no local package
+        repository), "config" (if package has not yet been configured) and
+        "build" (if package has not yet been built).
+
+    reinstall [--] PKG [...]
+        Re-install package(s).  Like "install" but perform every operations
+        "config", "build" and "install" whatever the current package status.
+
+    update [--] [PKG ...]
+        Update local repositories of packages to the master remote version.
+        If no packages are specified, all local repositories are updated.
+        If packages are specified, their local repositories must exist (that
+        is, they must have been previously installed or, at least, cloned).
+
+    upgrade [--] [PKG ...]
+        Upgrade packages.  If no packages are specified, all upgradable
+        packages (the ones which are currently installed but whose local
+        repository has changed) are re-built and re-installed.  For each
+        specified package, the local repository is updated, then the package
+        is re-built and re-installed if the local repository has changed.
+
+
+Low-level commands:
+
+    clone [--] PKG [...]
+        Clone repository of package(s) into a local directory.  Nothing
+        is done if local repository alraedy exists.
+
+    configure [--] PKG [...]
+    config [--] PKG [...]
+        Configure package(s) for building.  This operation should be done
+        after "clone" or "opdate".
+
+    build [--] PKG [...]
+        Build package(s).  This operation should be done after "config".
+
+    register [--] [PKG ...]
+        Register package(s) assumed they have been installed.  Useful for
+        packages that have been installed by hand.
+
+    forget [--] [PKG ...]
+        Forget (that is, un-register) package(s).
+
+    variables [--]
+        List name and value of global variables which can be used in
+        customization scripts.
+EOF
+}
+
+# Sort known packages.
+PACKAGES=$(echo $PACKAGES | tr ' ' "\n" | sort)
+
+if test $# -lt 1
+then
+    ypkg_command_help
+    exit 1
+fi
+
+command="$1"
+shift
+case "$command" in
+    build|check|clone|forget|help|install|reinstall|list|register|update|upgrade|variables)
+        ypkg_command_$command "$@"
+        ;;
+    config|configure)
+        ypkg_command_config "$@"
+        ;;
+    *)
+        die "Unknown command \"$command\""
+        ;;
+esac
